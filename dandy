@@ -1,0 +1,2342 @@
+local player     = game.Players.LocalPlayer
+local character  = player.Character or player.CharacterAdded:Wait()
+local humanoid   = character:WaitForChild("Humanoid")
+local rootPart   = character:WaitForChild("HumanoidRootPart")
+local mouse      = player:GetMouse()
+local runService = game:GetService("RunService")
+local uis        = game:GetService("UserInputService")
+local tween      = game:GetService("TweenService")
+local camera     = workspace.CurrentCamera
+local ts         = game:GetService("TeleportService")
+local http       = game:GetService("HttpService")
+local vu         = game:GetService("VirtualUser")
+local lighting   = game:GetService("Lighting")
+local plrs       = game:GetService("Players")
+local stats      = game:GetService("Stats")
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local flyEnabled       = false
+local flyVelocity, flyAlign, flyAttachment = nil, nil, nil
+local flySpeed         = 80
+local tpEnabled        = false
+local clickTp          = false
+local infiniteJump     = false
+local bhopEnabled      = false
+local invisEnabled     = false
+local fullbrightEnabled= false
+local autoHealEnabled  = false
+local autoJumpEnabled  = false
+local lowGraphics      = false
+local antiAfk          = false
+local walkOnWater      = false
+local walkOnWaterConn  = nil
+local autoRespawn      = false
+
+-- Safety
+local safetyAntiFling   = false
+local safetyAntiVoid    = false
+local safetyAntiVoidY   = -80
+local safetyAntiDrag    = false
+local safetyAutoRejoin  = false
+local safetyRejoinConn  = nil
+local safetyAntiFreeze  = false
+local safetyAntiFling2  = false     -- extra fling guard
+local safetyLastFling   = 0
+local safetyLastVoid    = 0
+local safetyLastDrag    = 0
+local safetyLastFreeze  = 0
+local safetyLastFling2  = 0
+local safetyLastPos     = nil
+local safetyDragLast    = nil
+local emergencyPos      = nil
+
+-- ESP
+local espPlayerEnabled  = false
+local espTwistedEnabled = false
+local espItemEnabled    = false
+local espHealEnabled    = false
+local espMachineEnabled = false
+local espUseBox         = false
+local espUseHighlight   = true
+local espShowDistance   = true
+local espShowHealth     = true
+local nameTagEnabled    = true
+
+local espAutoRefresh    = false
+local espAutoInterval   = 3
+local espLastAuto       = 0
+local maxESPDistance    = 400
+local maxESPItems       = 150
+local maxHighlights     = 28
+
+local espPlayerColor   = Color3.fromRGB(180, 100, 255)
+local espTwistedColor  = Color3.fromRGB(255, 60, 60)
+local espItemColor     = Color3.fromRGB(255, 220, 60)
+local espHealColor     = Color3.fromRGB(200, 100, 255)
+local espMachineColor  = Color3.fromRGB(60, 220, 100)
+
+local espCache = {}
+local hlCount = 0
+
+local espLastLabel      = 0
+local espLabelInterval  = 0.3
+local phaseCooldown     = 0
+local autoPhaseLast     = 0
+
+-- Sprint
+local walkSpeedVal     = 16
+local sprintSpeedVal   = 28
+local sprinting        = false
+local forceSpeed       = false
+local autoSprint       = false
+local sprintKey        = Enum.KeyCode.LeftShift
+
+-- Wall Phase
+local wallPhaseEnabled = false
+local autoPhaseEnabled = false
+local phaseKey         = Enum.KeyCode.E
+local phaseDistance    = 8
+
+-- UI
+local hudEnabled       = true
+local watermarkEnabled = true
+local toastsEnabled    = true
+local charScale        = 1
+local waypoints        = {}
+local WAYPOINT_FILE    = "SafePlayWaypoints.json"
+
+local hudFrame, hudFPS, hudPing, hudSpeed, hudPos, hudState, hudClock
+local watermarkFrame, watermarkLabel
+local dashStatPlayers, dashStatTime, dashStatFPS
+
+-- ============================================================
+-- KEYWORDS
+-- ============================================================
+local MACHINE_KEYWORDS = { "machine" }
+
+local HEAL_KEYWORDS = {
+    "bandage", "band-aid", "band aid",
+    "medkit", "med kit", "med-kit",
+    "heal", "healing", "health"
+}
+
+local ITEM_KEYWORDS = {
+    "tape", "valve", "pop", "chocolate",
+    "gumball", "bottle o' pop", "bottle o pop", "bottle o'pop",
+    "speed candy", "stamina candy"
+}
+
+local ITEM_BLACKLIST = {
+    "humanoidrootpart","head","torso","leftarm","rightarm",
+    "leftleg","rightleg","uppertorso","lowertorso",
+    "humanoid","animator","baseplate","camera"
+}
+
+-- STRICT: Twisted detection — ONLY models/parts with "monster" in the name
+local TWISTED_KEYWORD = "monster"
+
+local GENERIC = {
+    model = true, part = true, meshpart = true,
+    unionoperation = true, negatedoperation = true,
+    folder = true, instance = true,
+}
+
+local function getDisplayName(inst)
+    if not inst then return "?" end
+    if inst.Name and inst.Name ~= "" and not GENERIC[inst.Name:lower()] then
+        return inst.Name
+    end
+    for _, c in ipairs(inst:GetDescendants()) do
+        if c:IsA("BasePart") or c:IsA("Model") then
+            if c.Name and c.Name ~= "" and not GENERIC[c.Name:lower()] then
+                return c.Name
+            end
+        end
+    end
+    return inst.Name or "?"
+end
+
+-- ============================================================
+-- PALETTE — PURPLE
+-- ============================================================
+local P_MAIN   = Color3.fromRGB(160, 80, 255)
+local P_DARK   = Color3.fromRGB(45, 15, 90)
+local P_LIGHT  = Color3.fromRGB(210, 170, 255)
+local P_BG     = Color3.fromRGB(18, 12, 32)
+local P_PANEL  = Color3.fromRGB(30, 20, 50)
+local P_BTN    = Color3.fromRGB(70, 35, 130)
+local P_RED    = Color3.fromRGB(210, 60, 80)
+local P_GREEN  = Color3.fromRGB(60, 200, 100)
+local P_BLUE   = Color3.fromRGB(80, 130, 230)
+local P_YELLOW = Color3.fromRGB(255, 210, 60)
+local P_TEXT   = Color3.fromRGB(240, 225, 255)
+local P_TEXT_D = Color3.fromRGB(180, 155, 210)
+
+-- ============================================================
+-- WAYPOINT PERSISTENCE
+-- ============================================================
+local function loadWaypointsFromDisk()
+    if not (readfile and isfile) then return end
+    local ok, exists = pcall(isfile, WAYPOINT_FILE)
+    if not ok or not exists then return end
+    local rok, raw = pcall(readfile, WAYPOINT_FILE)
+    if not rok or not raw then return end
+    local jok, data = pcall(function() return http:JSONDecode(raw) end)
+    if not jok or type(data) ~= "table" then return end
+    for name, pos in pairs(data) do
+        if type(name) == "string" and type(pos) == "table"
+           and pos.x and pos.y and pos.z then
+            waypoints[name] = CFrame.new(pos.x, pos.y, pos.z)
+        end
+    end
+end
+
+local function saveWaypointsToDisk()
+    if not writefile then return end
+    local out = {}
+    for name, cf in pairs(waypoints) do
+        out[name] = { x = cf.X, y = cf.Y, z = cf.Z }
+    end
+    pcall(function()
+        writefile(WAYPOINT_FILE, http:JSONEncode(out))
+    end)
+end
+
+task.defer(loadWaypointsFromDisk)
+
+-- ============================================================
+-- GUI SCAFFOLD
+-- ============================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "GuiForSafePlay"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 780, 0, 580)
+main.Position = UDim2.new(0.5, -390, 0.5, -290)
+main.BackgroundColor3 = P_BG
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = screenGui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 16)
+
+local mainStroke = Instance.new("UIStroke", main)
+mainStroke.Color = P_MAIN; mainStroke.Thickness = 2; mainStroke.Transparency = 0.1
+
+local mainGrad = Instance.new("UIGradient", main)
+mainGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 18, 50)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(22, 12, 40)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(30, 18, 50)),
+})
+mainGrad.Rotation = 45
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 54)
+header.BackgroundColor3 = P_DARK
+header.BorderSizePixel = 0
+header.Parent = main
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
+
+local headerFix = Instance.new("Frame")
+headerFix.Size = UDim2.new(1, 0, 0, 22)
+headerFix.Position = UDim2.new(0, 0, 1, -22)
+headerFix.BackgroundColor3 = P_DARK
+headerFix.BorderSizePixel = 0
+headerFix.Parent = header
+
+local headerGrad = Instance.new("UIGradient", header)
+headerGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 30, 150)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(120, 50, 210)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 30, 150)),
+})
+
+local logoDot = Instance.new("Frame")
+logoDot.Size = UDim2.new(0, 14, 0, 14)
+logoDot.Position = UDim2.new(0, 20, 0.5, -7)
+logoDot.BackgroundColor3 = P_MAIN
+logoDot.BorderSizePixel = 0
+logoDot.Parent = header
+Instance.new("UICorner", logoDot).CornerRadius = UDim.new(1, 0)
+
+local logoGlow = Instance.new("UIStroke", logoDot)
+logoGlow.Color = P_LIGHT; logoGlow.Thickness = 2; logoGlow.Transparency = 0.4
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -100, 1, 0)
+title.Position = UDim2.new(0, 46, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "GUI FOR SAFE PLAY"
+title.TextColor3 = P_TEXT
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local titleTag = Instance.new("TextLabel")
+titleTag.Size = UDim2.new(0, 100, 1, 0)
+titleTag.Position = UDim2.new(0, 230, 0, 0)
+titleTag.BackgroundTransparency = 1
+titleTag.Text = "SAFETY"
+titleTag.TextColor3 = P_MAIN
+titleTag.Font = Enum.Font.GothamBold
+titleTag.TextSize = 11
+titleTag.TextXAlignment = Enum.TextXAlignment.Left
+titleTag.Parent = header
+
+local minimize = Instance.new("TextButton")
+minimize.Size = UDim2.new(0, 32, 0, 32)
+minimize.Position = UDim2.new(1, -42, 0, 11)
+minimize.BackgroundColor3 = P_MAIN
+minimize.BorderSizePixel = 0
+minimize.Text = "−"
+minimize.TextColor3 = Color3.fromRGB(255, 255, 255)
+minimize.Font = Enum.Font.GothamBold
+minimize.TextSize = 20
+minimize.Parent = header
+Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 8)
+
+local sidebar = Instance.new("Frame")
+sidebar.Size = UDim2.new(0, 170, 1, -64)
+sidebar.Position = UDim2.new(0, 12, 0, 58)
+sidebar.BackgroundColor3 = P_PANEL
+sidebar.BorderSizePixel = 0
+sidebar.Parent = main
+Instance.new("UICorner", sidebar).CornerRadius = UDim.new(0, 12)
+
+local sideScroll = Instance.new("ScrollingFrame")
+sideScroll.Size = UDim2.new(1, 0, 1, 0)
+sideScroll.BackgroundTransparency = 1
+sideScroll.BorderSizePixel = 0
+sideScroll.ScrollBarThickness = 3
+sideScroll.ScrollBarImageColor3 = P_MAIN
+sideScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+sideScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+sideScroll.Parent = sidebar
+
+local sideLayout = Instance.new("UIListLayout")
+sideLayout.Padding = UDim.new(0, 6)
+sideLayout.SortOrder = Enum.SortOrder.LayoutOrder
+sideLayout.Parent = sideScroll
+
+local sidePad = Instance.new("UIPadding")
+sidePad.PaddingTop = UDim.new(0, 12)
+sidePad.PaddingLeft = UDim.new(0, 10)
+sidePad.PaddingRight = UDim.new(0, 10)
+sidePad.PaddingBottom = UDim.new(0, 12)
+sidePad.Parent = sideScroll
+
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, -194, 1, -64)
+content.Position = UDim2.new(0, 182, 0, 58)
+content.BackgroundColor3 = P_PANEL
+content.BorderSizePixel = 0
+content.Parent = main
+Instance.new("UICorner", content).CornerRadius = UDim.new(0, 12)
+
+local contentScroll = Instance.new("ScrollingFrame")
+contentScroll.Size = UDim2.new(1, -20, 1, -20)
+contentScroll.Position = UDim2.new(0, 10, 0, 10)
+contentScroll.BackgroundTransparency = 1
+contentScroll.BorderSizePixel = 0
+contentScroll.ScrollBarThickness = 4
+contentScroll.ScrollBarImageColor3 = P_MAIN
+contentScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+contentScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+contentScroll.Parent = content
+
+-- ============================================================
+-- TOAST
+-- ============================================================
+local toastHolder = Instance.new("Frame")
+toastHolder.Size = UDim2.new(0, 260, 1, -40)
+toastHolder.Position = UDim2.new(1, -280, 0, 20)
+toastHolder.BackgroundTransparency = 1
+toastHolder.Parent = screenGui
+
+local toastLayout = Instance.new("UIListLayout")
+toastLayout.Padding = UDim.new(0, 8)
+toastLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+toastLayout.SortOrder = Enum.SortOrder.LayoutOrder
+toastLayout.Parent = toastHolder
+
+local function toast(text, color)
+    if not toastsEnabled then return end
+    color = color or P_MAIN
+    local box = Instance.new("Frame")
+    box.Size = UDim2.new(1, 0, 0, 40)
+    box.BackgroundColor3 = P_BG
+    box.BackgroundTransparency = 0.05
+    box.BorderSizePixel = 0
+    box.Parent = toastHolder
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 10)
+
+    local stroke = Instance.new("UIStroke", box)
+    stroke.Color = color; stroke.Thickness = 1.5; stroke.Transparency = 0.15
+
+    local accent = Instance.new("Frame")
+    accent.Size = UDim2.new(0, 4, 1, -12)
+    accent.Position = UDim2.new(0, 6, 0, 6)
+    accent.BackgroundColor3 = color
+    accent.BorderSizePixel = 0
+    accent.Parent = box
+    Instance.new("UICorner", accent).CornerRadius = UDim.new(1, 0)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -24, 1, 0)
+    lbl.Position = UDim2.new(0, 18, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = P_TEXT
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = box
+
+    box.Position = UDim2.new(1, 60, 0, 0)
+    tween:Create(box, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0, 0, 0, 0),
+    }):Play()
+
+    task.delay(2.5, function()
+        local out = tween:Create(box, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = UDim2.new(1, 60, 0, 0),
+            BackgroundTransparency = 1,
+        })
+        out:Play()
+        out.Completed:Connect(function() box:Destroy() end)
+    end)
+end
+
+-- Watermark
+watermarkFrame = Instance.new("Frame")
+watermarkFrame.Size = UDim2.new(0, 220, 0, 30)
+watermarkFrame.Position = UDim2.new(0, 20, 0, 20)
+watermarkFrame.BackgroundColor3 = P_BG
+watermarkFrame.BackgroundTransparency = 0.15
+watermarkFrame.BorderSizePixel = 0
+watermarkFrame.Active = true
+watermarkFrame.Draggable = true
+watermarkFrame.Parent = screenGui
+Instance.new("UICorner", watermarkFrame).CornerRadius = UDim.new(0, 8)
+
+local wmStroke = Instance.new("UIStroke", watermarkFrame)
+wmStroke.Color = P_MAIN; wmStroke.Thickness = 1; wmStroke.Transparency = 0.3
+
+watermarkLabel = Instance.new("TextLabel")
+watermarkLabel.Size = UDim2.new(1, -16, 1, 0)
+watermarkLabel.Position = UDim2.new(0, 8, 0, 0)
+watermarkLabel.BackgroundTransparency = 1
+watermarkLabel.Text = "◆ SAFE PLAY · v23 · -- FPS"
+watermarkLabel.TextColor3 = P_MAIN
+watermarkLabel.Font = Enum.Font.GothamBold
+watermarkLabel.TextSize = 12
+watermarkLabel.TextXAlignment = Enum.TextXAlignment.Left
+watermarkLabel.Parent = watermarkFrame
+
+-- ============================================================
+-- HUD
+-- ============================================================
+hudFrame = Instance.new("Frame")
+hudFrame.Size = UDim2.new(0, 230, 0, 140)
+hudFrame.Position = UDim2.new(0, 20, 0, 60)
+hudFrame.BackgroundColor3 = P_BG
+hudFrame.BackgroundTransparency = 0.1
+hudFrame.BorderSizePixel = 0
+hudFrame.Active = true
+hudFrame.Draggable = true
+hudFrame.Parent = screenGui
+Instance.new("UICorner", hudFrame).CornerRadius = UDim.new(0, 12)
+
+local hudStroke = Instance.new("UIStroke", hudFrame)
+hudStroke.Color = P_MAIN; hudStroke.Thickness = 1.5; hudStroke.Transparency = 0.25
+
+local hudGrad = Instance.new("UIGradient", hudFrame)
+hudGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(35, 22, 55)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 12, 32)),
+})
+hudGrad.Rotation = 90
+
+local hudTitle = Instance.new("TextLabel")
+hudTitle.Size = UDim2.new(1, -16, 0, 22)
+hudTitle.Position = UDim2.new(0, 8, 0, 8)
+hudTitle.BackgroundTransparency = 1
+hudTitle.Text = "◆ SAFE PLAY STATS"
+hudTitle.TextColor3 = P_MAIN
+hudTitle.Font = Enum.Font.GothamBold
+hudTitle.TextSize = 12
+hudTitle.TextXAlignment = Enum.TextXAlignment.Left
+hudTitle.Parent = hudFrame
+
+local hudList = Instance.new("Frame")
+hudList.Size = UDim2.new(1, -16, 1, -38)
+hudList.Position = UDim2.new(0, 8, 0, 34)
+hudList.BackgroundTransparency = 1
+hudList.Parent = hudFrame
+
+local hudLayout = Instance.new("UIListLayout")
+hudLayout.Padding = UDim.new(0, 4)
+hudLayout.SortOrder = Enum.SortOrder.LayoutOrder
+hudLayout.Parent = hudList
+
+local function makeHudRow(order, label)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 16)
+    row.BackgroundTransparency = 1
+    row.LayoutOrder = order
+    row.Parent = hudList
+
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(0, 70, 1, 0)
+    l.BackgroundTransparency = 1
+    l.Text = label
+    l.TextColor3 = P_TEXT_D
+    l.Font = Enum.Font.Gotham
+    l.TextSize = 11
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = row
+
+    local v = Instance.new("TextLabel")
+    v.Size = UDim2.new(1, -70, 1, 0)
+    v.Position = UDim2.new(0, 70, 0, 0)
+    v.BackgroundTransparency = 1
+    v.Text = "—"
+    v.TextColor3 = P_TEXT
+    v.Font = Enum.Font.GothamBold
+    v.TextSize = 11
+    v.TextXAlignment = Enum.TextXAlignment.Right
+    v.Parent = row
+    return v
+end
+
+hudFPS   = makeHudRow(1, "FPS")
+hudPing  = makeHudRow(2, "Ping")
+hudSpeed = makeHudRow(3, "Speed")
+hudPos   = makeHudRow(4, "Position")
+hudClock = makeHudRow(5, "Time")
+hudState = makeHudRow(6, "State")
+
+-- ============================================================
+-- BUILDERS
+-- ============================================================
+local tabs = {}
+local activeTab = nil
+
+local function createTab(name)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 36)
+    btn.BackgroundColor3 = P_BTN
+    btn.BorderSizePixel = 0
+    btn.Text = name
+    btn.TextColor3 = P_TEXT
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.Parent = sideScroll
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    local p = Instance.new("UIPadding", btn); p.PaddingLeft = UDim.new(0, 12)
+
+    local accent = Instance.new("Frame")
+    accent.Size = UDim2.new(0, 3, 0, 0)
+    accent.Position = UDim2.new(0, 6, 0.5, 0)
+    accent.BackgroundColor3 = P_MAIN
+    accent.BorderSizePixel = 0
+    accent.Visible = false
+    accent.Parent = btn
+    Instance.new("UICorner", accent).CornerRadius = UDim.new(1, 0)
+
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, 0, 0, 0)
+    container.BackgroundTransparency = 1
+    container.Visible = false
+    container.Parent = contentScroll
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 7)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = container
+
+    tabs[name] = { button = btn, container = container, accent = accent }
+    btn.MouseButton1Click:Connect(function()
+        for _, t in pairs(tabs) do
+            t.container.Visible = false
+            tween:Create(t.button, TweenInfo.new(0.15), { BackgroundColor3 = P_BTN }):Play()
+            tween:Create(t.button, TweenInfo.new(0.15), { TextColor3 = P_TEXT }):Play()
+            t.accent.Visible = false
+            tween:Create(t.accent, TweenInfo.new(0.15), { Size = UDim2.new(0, 3, 0, 0) }):Play()
+        end
+        container.Visible = true
+        tween:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = P_MAIN }):Play()
+        tween:Create(btn, TweenInfo.new(0.15), { TextColor3 = Color3.fromRGB(255, 255, 255) }):Play()
+        accent.Visible = true
+        tween:Create(accent, TweenInfo.new(0.2), { Size = UDim2.new(0, 3, 0, 22) }):Play()
+        activeTab = name
+    end)
+    if not activeTab then
+        container.Visible = true
+        btn.BackgroundColor3 = P_MAIN
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        accent.Visible = true
+        accent.Size = UDim2.new(0, 3, 0, 22)
+        activeTab = name
+    end
+    return container
+end
+
+local function makeButton(parent, text, callback, color)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 36)
+    btn.BackgroundColor3 = color or P_BTN
+    btn.BorderSizePixel = 0
+    btn.Text = text
+    btn.TextColor3 = P_TEXT
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.Parent = parent
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", btn)
+    stroke.Color = P_MAIN; stroke.Thickness = 1; stroke.Transparency = 0.75
+    local base = color or P_BTN
+    btn.MouseEnter:Connect(function()
+        tween:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = base:Lerp(P_MAIN, 0.3) }):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        tween:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = base }):Play()
+    end)
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+local function makeToggle(parent, text, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 36)
+    btn.BackgroundColor3 = P_BTN
+    btn.BorderSizePixel = 0
+    btn.Text = text .. "   ○"
+    btn.TextColor3 = P_TEXT
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.Parent = parent
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", btn)
+    stroke.Color = P_MAIN; stroke.Thickness = 1; stroke.Transparency = 0.75
+    local state = false
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.Text = text .. (state and "   ●" or "   ○")
+        tween:Create(btn, TweenInfo.new(0.2), { BackgroundColor3 = state and P_MAIN or P_BTN }):Play()
+        callback(state)
+        toast(text .. (state and " · ON" or " · OFF"), state and P_MAIN or P_RED)
+    end)
+    return btn
+end
+
+local function makeInput(parent, label, default, callback)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 36)
+    row.BackgroundTransparency = 1
+    row.Parent = parent
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0, 150, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = P_TEXT_D
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 13
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -212, 1, 0)
+    box.Position = UDim2.new(0, 150, 0, 0)
+    box.BackgroundColor3 = P_BTN
+    box.BorderSizePixel = 0
+    box.Text = default
+    box.TextColor3 = P_TEXT
+    box.Font = Enum.Font.Gotham
+    box.TextSize = 13
+    box.Parent = row
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+
+    local set = Instance.new("TextButton")
+    set.Size = UDim2.new(0, 52, 1, 0)
+    set.Position = UDim2.new(1, -52, 0, 0)
+    set.BackgroundColor3 = P_MAIN
+    set.BorderSizePixel = 0
+    set.Text = "SET"
+    set.TextColor3 = Color3.fromRGB(255, 255, 255)
+    set.Font = Enum.Font.GothamBold
+    set.TextSize = 12
+    set.Parent = row
+    Instance.new("UICorner", set).CornerRadius = UDim.new(0, 8)
+
+    set.MouseButton1Click:Connect(function()
+        callback(box.Text)
+        toast(label .. " = " .. box.Text, P_MAIN)
+    end)
+    return box
+end
+
+local function makeSlider(parent, label, min, max, default, callback)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 48)
+    row.BackgroundTransparency = 1
+    row.Parent = parent
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 20)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label .. ": " .. tostring(default)
+    lbl.TextColor3 = P_TEXT_D
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, 0, 0, 16)
+    bar.Position = UDim2.new(0, 0, 0, 24)
+    bar.BackgroundColor3 = P_BTN
+    bar.BorderSizePixel = 0
+    bar.Parent = row
+    Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 8)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    fill.BackgroundColor3 = P_MAIN
+    fill.BorderSizePixel = 0
+    fill.Parent = bar
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 8)
+
+    local dragging = false
+    local function update(x)
+        local rel = math.clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        fill.Size = UDim2.new(rel, 0, 1, 0)
+        local val = math.floor(min + (max - min) * rel)
+        lbl.Text = label .. ": " .. tostring(val)
+        callback(val)
+    end
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true end
+    end)
+    bar.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+    uis.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            update(input.Position.X)
+        end
+    end)
+end
+
+local function makeSection(parent, text)
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, 0, 0, 26)
+    holder.BackgroundTransparency = 1
+    holder.Parent = parent
+
+    local leftLine = Instance.new("Frame")
+    leftLine.Size = UDim2.new(0.4, 0, 0, 1)
+    leftLine.Position = UDim2.new(0, 0, 0.5, 0)
+    leftLine.BackgroundColor3 = P_MAIN
+    leftLine.BackgroundTransparency = 0.6
+    leftLine.BorderSizePixel = 0
+    leftLine.Parent = holder
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.5, 0, 1, 0)
+    lbl.Position = UDim2.new(0.25, 0, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text:upper()
+    lbl.TextColor3 = P_MAIN
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 11
+    lbl.Parent = holder
+
+    local rightLine = Instance.new("Frame")
+    rightLine.Size = UDim2.new(0.4, 0, 0, 1)
+    rightLine.Position = UDim2.new(0.6, 0, 0.5, 0)
+    rightLine.BackgroundColor3 = P_MAIN
+    rightLine.BackgroundTransparency = 0.6
+    rightLine.BorderSizePixel = 0
+    rightLine.Parent = holder
+
+    return holder
+end
+
+-- ============================================================
+-- CORE FUNCTIONS
+-- ============================================================
+local function phaseThroughWall()
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    if tick() - phaseCooldown < 0.3 then return false end
+
+    local dir = humanoid and humanoid.MoveDirection or Vector3.zero
+    if dir.Magnitude < 0.1 then dir = camera.CFrame.LookVector end
+    dir = Vector3.new(dir.X, 0, dir.Z)
+    if dir.Magnitude < 0.1 then return false end
+    dir = dir.Unit
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { char }
+    params.IgnoreWater = true
+
+    local hit1 = workspace:Raycast(hrp.Position, dir * phaseDistance, params)
+    if not hit1 then return false end
+
+    local pastOrigin = hit1.Position + dir * 1.5
+    local hit2 = workspace:Raycast(pastOrigin, dir * phaseDistance, params)
+
+    local landingPos
+    if hit2 then
+        local gap = (hit2.Position - hit1.Position).Magnitude
+        if gap < 3 then return false end
+        landingPos = hit1.Position + dir * (gap / 2)
+    else
+        landingPos = hit1.Position + dir * 4
+    end
+
+    local checkUp = workspace:Raycast(landingPos, Vector3.new(0, 3, 0), params)
+    if checkUp then return false end
+
+    local floor = workspace:Raycast(landingPos, Vector3.new(0, -50, 0), params)
+    local targetY = floor and (floor.Position.Y + 4) or landingPos.Y
+    hrp.CFrame = CFrame.new(Vector3.new(landingPos.X, targetY, landingPos.Z))
+    phaseCooldown = tick()
+    return true
+end
+
+local function stopFly()
+    if flyVelocity then flyVelocity:Destroy() flyVelocity = nil end
+    if flyAlign then flyAlign:Destroy() flyAlign = nil end
+    if flyAttachment then flyAttachment:Destroy() flyAttachment = nil end
+    if humanoid and humanoid.Parent then humanoid.PlatformStand = false end
+end
+
+local function startFly()
+    stopFly()
+    local char = player.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum then return end
+    hum.PlatformStand = true
+    flyAttachment = Instance.new("Attachment")
+    flyAttachment.Name = "SafePlayFlyAttachment"
+    flyAttachment.Parent = root
+    flyAlign = Instance.new("AlignOrientation")
+    flyAlign.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    flyAlign.Attachment0 = flyAttachment
+    flyAlign.MaxTorque = math.huge
+    flyAlign.Responsiveness = 200
+    flyAlign.RigidityEnabled = false
+    flyAlign.Parent = root
+    flyVelocity = Instance.new("LinearVelocity")
+    flyVelocity.Attachment0 = flyAttachment
+    flyVelocity.MaxForce = math.huge
+    flyVelocity.VectorVelocity = Vector3.zero
+    flyVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+    flyVelocity.Parent = root
+end
+
+local function currentTargetSpeed()
+    return sprinting and sprintSpeedVal or walkSpeedVal
+end
+
+local function applyCurrentSpeed()
+    if not humanoid or not humanoid.Parent then return end
+    local target = currentTargetSpeed()
+    if humanoid.WalkSpeed ~= target then humanoid.WalkSpeed = target end
+end
+
+local function attachSpeedGuard(hum)
+    hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+        if flyEnabled then return end
+        if forceSpeed or sprinting then
+            local target = currentTargetSpeed()
+            if hum.WalkSpeed ~= target then hum.WalkSpeed = target end
+        end
+    end)
+end
+if humanoid then attachSpeedGuard(humanoid) end
+
+local function applyCharacterScale(scale)
+    local char = player.Character
+    if not char then return end
+    local ok = pcall(function() char:ScaleTo(scale) end)
+    if not ok then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function()
+                hum.BodyDepthScale.Value = scale
+                hum.BodyHeightScale.Value = scale
+                hum.BodyWidthScale.Value = scale
+                hum.HeadScale.Value = scale
+            end)
+        end
+    end
+end
+
+-- ============================================================
+-- ESP CORE — STRICT Monster detection
+-- ============================================================
+
+-- Returns true ONLY if the instance name contains "monster"
+local function nameHasMonster(inst)
+    if not inst or not inst.Name then return false end
+    return inst.Name:lower():find(TWISTED_KEYWORD, 1, true) ~= nil
+end
+
+-- STRICT: isNPC returns true ONLY for objects with "monster" in the name.
+-- No more "any model with humanoid" auto-classification.
+local function isNPC(model)
+    if not model or not model:IsA("Model") then return false end
+    if plrs:GetPlayerFromCharacter(model) then return false end
+    if model == player.Character then return false end
+    -- STRICT check: name must contain "monster"
+    return nameHasMonster(model)
+end
+
+local function getAdornee(model)
+    if model:IsA("BasePart") then return model end
+    return model:FindFirstChild("HumanoidRootPart")
+        or model.PrimaryPart
+        or model:FindFirstChildWhichIsA("BasePart")
+end
+
+local function nameMatchesAnywhere(inst, list)
+    if not inst or not inst.Name then return false end
+    local n = inst.Name:lower()
+    for _, b in ipairs(ITEM_BLACKLIST) do if n == b then return false end end
+    for _, kw in ipairs(list) do
+        if n:find(kw, 1, true) then return true end
+    end
+    if inst:IsA("Model") or inst:IsA("Folder") then
+        for _, c in ipairs(inst:GetChildren()) do
+            if c.Name then
+                local cn = c.Name:lower()
+                local bl = false
+                for _, b in ipairs(ITEM_BLACKLIST) do
+                    if cn == b then bl = true; break end
+                end
+                if not bl then
+                    for _, kw in ipairs(list) do
+                        if cn:find(kw, 1, true) then return true end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function classifyItem(inst)
+    if not inst or not inst.Parent then return nil end
+    if inst == player.Character then return nil end
+    if inst:IsA("Model") and plrs:GetPlayerFromCharacter(inst) then return nil end
+    if not (inst:IsA("BasePart") or inst:IsA("Model")) then return nil end
+
+    -- Skip anything that's classified as a Twisted (Monster name)
+    if nameHasMonster(inst) then return nil end
+
+    if nameMatchesAnywhere(inst, MACHINE_KEYWORDS) then return "machine" end
+    if nameMatchesAnywhere(inst, HEAL_KEYWORDS) then return "heal" end
+    if nameMatchesAnywhere(inst, ITEM_KEYWORDS) then return "item" end
+    return nil
+end
+
+local function categoryColor(cat)
+    if cat == "machine" then return espMachineColor end
+    if cat == "heal"    then return espHealColor end
+    if cat == "item"    then return espItemColor end
+    if cat == "player"  then return espPlayerColor end
+    if cat == "twisted" then return espTwistedColor end
+    return Color3.new(1,1,1)
+end
+
+local function categoryEnabled(cat)
+    if cat == "machine" then return espMachineEnabled end
+    if cat == "heal"    then return espHealEnabled end
+    if cat == "item"    then return espItemEnabled end
+    if cat == "player"  then return espPlayerEnabled end
+    if cat == "twisted" then return espTwistedEnabled end
+    return false
+end
+
+local function makeESPBlock(model, category, color, labelName)
+    if espCache[model] then return end
+    local adornee = getAdornee(model)
+    if not adornee then return end
+
+    local sel = Instance.new("SelectionBox")
+    sel.Name = "SafePlaySel"
+    sel.Adornee = adornee
+    sel.Color3 = color
+    sel.LineThickness = 0.15
+    sel.Transparency = 0.3
+    sel.SurfaceTransparency = 1
+    sel.SurfaceColor3 = color
+    sel.Parent = adornee
+
+    local hl
+    if espUseHighlight and hlCount < maxHighlights then
+        local hlTarget = model:IsA("Model") and model or adornee
+        hl = Instance.new("Highlight")
+        hl.Name = "SafePlayESP"
+        hl.Adornee = hlTarget
+        hl.FillColor = color
+        hl.OutlineColor = color
+        hl.FillTransparency = 0.75
+        hl.OutlineTransparency = 0.2
+        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        hl.Parent = hlTarget
+        hlCount = hlCount + 1
+    end
+
+    local box
+    if espUseBox then
+        box = Instance.new("BoxHandleAdornment")
+        box.Name = "SafePlayBox"
+        box.Adornee = adornee
+        local extents = model:IsA("Model") and model:GetExtentsSize() or adornee.Size
+        box.Size = extents + Vector3.new(0.5, 0.5, 0.5)
+        box.AlwaysOnTop = true
+        box.ZIndex = 5
+        box.Transparency = 0.4
+        box.Color3 = color
+        box.Parent = adornee
+    end
+
+    local tag
+    if nameTagEnabled or espShowDistance or espShowHealth then
+        local head = model:FindFirstChild("Head") or adornee
+        tag = Instance.new("BillboardGui")
+        tag.Name = "SafePlayTag"
+        tag.Size = UDim2.new(0, 160, 0, 40)
+        tag.StudsOffset = Vector3.new(0, 3.5, 0)
+        tag.AlwaysOnTop = true
+        tag.Adornee = head
+        tag.Parent = head
+
+        local prefix = ""
+        if category == "heal" then prefix = "[HP] "
+        elseif category == "machine" then prefix = "[MCH] " end
+
+        local shownName
+        if category == "player" then
+            shownName = labelName or model.Name
+        elseif category == "twisted" then
+            shownName = model.Name
+        else
+            shownName = getDisplayName(model)
+        end
+
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.Name = "NameLbl"
+        nameLbl.Size = UDim2.new(1, 0, 0, 18)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text = prefix .. shownName
+        nameLbl.TextColor3 = color
+        nameLbl.TextStrokeTransparency = 0
+        nameLbl.Font = Enum.Font.GothamBold
+        nameLbl.TextSize = 13
+        nameLbl.Parent = tag
+
+        local infoLbl = Instance.new("TextLabel")
+        infoLbl.Name = "InfoLbl"
+        infoLbl.Size = UDim2.new(1, 0, 0, 14)
+        infoLbl.Position = UDim2.new(0, 0, 0, 18)
+        infoLbl.BackgroundTransparency = 1
+        infoLbl.Text = ""
+        infoLbl.TextColor3 = Color3.fromRGB(230, 230, 230)
+        infoLbl.TextStrokeTransparency = 0
+        infoLbl.Font = Enum.Font.Gotham
+        infoLbl.TextSize = 11
+        infoLbl.Parent = tag
+    end
+
+    espCache[model] = {
+        selection = sel, highlight = hl, box = box, tag = tag,
+        category = category, color = color, adornee = adornee
+    }
+end
+
+local function removeESPBlock(model)
+    local data = espCache[model]
+    if not data then return end
+    if data.selection and data.selection.Parent then data.selection:Destroy() end
+    if data.highlight and data.highlight.Parent then
+        data.highlight:Destroy()
+        hlCount = math.max(0, hlCount - 1)
+    end
+    if data.box and data.box.Parent then data.box:Destroy() end
+    if data.tag and data.tag.Parent then data.tag:Destroy() end
+    espCache[model] = nil
+end
+
+local function clearAllESP()
+    for model in pairs(espCache) do removeESPBlock(model) end
+    espCache = {}
+    hlCount = 0
+end
+
+-- Full workspace scan
+local function fullScan()
+    -- Remove stale / disabled
+    for model, data in pairs(espCache) do
+        if not model.Parent then
+            removeESPBlock(model)
+        elseif not categoryEnabled(data.category) then
+            removeESPBlock(model)
+        end
+    end
+
+    -- Players
+    if espPlayerEnabled then
+        for _, p in pairs(plrs:GetPlayers()) do
+            if p ~= player and p.Character then
+                if not espCache[p.Character] then
+                    makeESPBlock(p.Character, "player", espPlayerColor, p.Name)
+                end
+            end
+        end
+    end
+
+    -- Count for item cap
+    local itemCount = 0
+    for _, data in pairs(espCache) do
+        if data.category ~= "player" and data.category ~= "twisted" then
+            itemCount = itemCount + 1
+        end
+    end
+
+    -- Scan workspace — STRICT
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if not espCache[obj] then
+            local monsterName = nameHasMonster(obj)
+
+            -- Twisted: ONLY if name contains "monster"
+            if espTwistedEnabled and monsterName and (obj:IsA("Model") or obj:IsA("BasePart")) then
+                makeESPBlock(obj, "twisted", espTwistedColor)
+            elseif obj:IsA("BasePart") or obj:IsA("Model") then
+                local cat = classifyItem(obj)
+                if cat and categoryEnabled(cat) then
+                    if itemCount < maxESPItems then
+                        makeESPBlock(obj, cat, categoryColor(cat))
+                        itemCount = itemCount + 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function refreshESPLabels()
+    local char = player.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    for model, data in pairs(espCache) do
+        if data.tag and data.tag.Parent then
+            local infoLbl = data.tag:FindFirstChild("InfoLbl")
+            if infoLbl then
+                local root = data.adornee or model.PrimaryPart
+                local bits = {}
+                if root and espShowDistance then
+                    bits[#bits+1] = string.format("%dm",
+                        math.floor((root.Position - myRoot.Position).Magnitude))
+                end
+                if espShowHealth and model:IsA("Model") then
+                    local hum = model:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        bits[#bits+1] = string.format("%d/%d",
+                            math.floor(hum.Health), math.floor(hum.MaxHealth))
+                    end
+                end
+                infoLbl.Text = table.concat(bits, " · ")
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- TAB 1 — DASHBOARD
+-- ============================================================
+local dashTab = createTab("◆ Dashboard")
+
+local welcomeCard = Instance.new("Frame")
+welcomeCard.Size = UDim2.new(1, 0, 0, 90)
+welcomeCard.BackgroundColor3 = P_BTN
+welcomeCard.BorderSizePixel = 0
+welcomeCard.Parent = dashTab
+Instance.new("UICorner", welcomeCard).CornerRadius = UDim.new(0, 12)
+
+local wcStroke = Instance.new("UIStroke", welcomeCard)
+wcStroke.Color = P_MAIN; wcStroke.Thickness = 1.5; wcStroke.Transparency = 0.3
+
+local wcGrad = Instance.new("UIGradient", welcomeCard)
+wcGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(100, 45, 180)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 25, 120)),
+})
+wcGrad.Rotation = 30
+
+local wcTitle = Instance.new("TextLabel")
+wcTitle.Size = UDim2.new(1, -20, 0, 30)
+wcTitle.Position = UDim2.new(0, 14, 0, 10)
+wcTitle.BackgroundTransparency = 1
+wcTitle.Text = "Welcome, " .. player.Name .. "!"
+wcTitle.TextColor3 = P_LIGHT
+wcTitle.Font = Enum.Font.GothamBold
+wcTitle.TextSize = 17
+wcTitle.TextXAlignment = Enum.TextXAlignment.Left
+wcTitle.Parent = welcomeCard
+
+local wcSub = Instance.new("TextLabel")
+wcSub.Size = UDim2.new(1, -20, 0, 40)
+wcSub.Position = UDim2.new(0, 14, 0, 40)
+wcSub.BackgroundTransparency = 1
+wcSub.Text = "v23 · Strict Monster-only Twisted detection · Persistent waypoints"
+wcSub.TextColor3 = P_TEXT_D
+wcSub.Font = Enum.Font.Gotham
+wcSub.TextSize = 12
+wcSub.TextXAlignment = Enum.TextXAlignment.Left
+wcSub.TextYAlignment = Enum.TextYAlignment.Top
+wcSub.Parent = welcomeCard
+
+makeSection(dashTab, "Quick Stats")
+
+local statRow1 = Instance.new("Frame")
+statRow1.Size = UDim2.new(1, 0, 0, 60)
+statRow1.BackgroundTransparency = 1
+statRow1.Parent = dashTab
+
+local function makeStatCard(parent, pos, label, initial)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(0.33, -6, 1, 0)
+    card.Position = pos
+    card.BackgroundColor3 = P_BTN
+    card.BorderSizePixel = 0
+    card.Parent = parent
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 10)
+    local s = Instance.new("UIStroke", card)
+    s.Color = P_MAIN; s.Thickness = 1; s.Transparency = 0.5
+
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, 0, 0, 20)
+    l.Position = UDim2.new(0, 0, 0, 6)
+    l.BackgroundTransparency = 1
+    l.Text = label
+    l.TextColor3 = P_TEXT_D
+    l.Font = Enum.Font.Gotham
+    l.TextSize = 10
+    l.Parent = card
+
+    local v = Instance.new("TextLabel")
+    v.Size = UDim2.new(1, 0, 0, 30)
+    v.Position = UDim2.new(0, 0, 0, 24)
+    v.BackgroundTransparency = 1
+    v.Text = initial
+    v.TextColor3 = P_MAIN
+    v.Font = Enum.Font.GothamBold
+    v.TextSize = 16
+    v.Parent = card
+    return v
+end
+
+dashStatPlayers = makeStatCard(statRow1, UDim2.new(0, 0, 0, 0), "PLAYERS", "0")
+dashStatTime    = makeStatCard(statRow1, UDim2.new(0.333, 4, 0, 0), "TIME", "00:00")
+dashStatFPS     = makeStatCard(statRow1, UDim2.new(0.666, 8, 0, 0), "FPS", "60")
+
+makeSection(dashTab, "Quick Actions")
+
+makeButton(dashTab, "🔄  Refresh All ESP", function()
+    fullScan()
+    toast("ESP refreshed", P_MAIN)
+end, P_MAIN)
+
+makeButton(dashTab, "🚀  Enable Auto-Sprint + Force Speed", function()
+    autoSprint = true; forceSpeed = true
+    applyCurrentSpeed()
+    toast("Auto-Sprint + Force Speed ON", P_MAIN)
+end, P_MAIN)
+
+makeButton(dashTab, "🧲  Enable All ESP + Refresh", function()
+    espPlayerEnabled = true; espTwistedEnabled = true
+    espItemEnabled = true; espHealEnabled = true; espMachineEnabled = true
+    clearAllESP()
+    fullScan()
+    toast("All ESP Enabled + Refreshed", P_GREEN)
+end, P_GREEN)
+
+makeButton(dashTab, "🧹  Clear All ESP", function()
+    clearAllESP()
+    toast("ESP Cleared", P_BLUE)
+end, P_BLUE)
+
+makeButton(dashTab, "⚠️  PANIC: Turn Off Everything", function()
+    flyEnabled = false; stopFly()
+    wallPhaseEnabled = false; autoPhaseEnabled = false
+    forceSpeed = false; autoSprint = false
+    sprinting = false; applyCurrentSpeed()
+    tpEnabled = false; clickTp = false
+    infiniteJump = false; bhopEnabled = false
+    autoHealEnabled = false; autoJumpEnabled = false
+    espPlayerEnabled = false; espTwistedEnabled = false
+    espItemEnabled = false; espHealEnabled = false; espMachineEnabled = false
+    safetyAntiFling = false; safetyAntiVoid = false
+    safetyAntiDrag = false; safetyAntiFreeze = false; safetyAntiFling2 = false
+    clearAllESP()
+    toast("PANIC — Everything OFF", P_RED)
+end, P_RED)
+
+-- ============================================================
+-- TAB 2 — MOVEMENT
+-- ============================================================
+local moveTab = createTab("Movement")
+makeSection(moveTab, "Speed")
+
+makeInput(moveTab, "Walk Speed", "16", function(v)
+    local n = tonumber(v); if n then walkSpeedVal = n; applyCurrentSpeed() end
+end)
+makeInput(moveTab, "Sprint Speed", "28", function(v)
+    local n = tonumber(v); if n then sprintSpeedVal = n; applyCurrentSpeed() end
+end)
+makeToggle(moveTab, "Force Speed (Lock)", function(s)
+    forceSpeed = s; if s then applyCurrentSpeed() end
+end)
+makeToggle(moveTab, "Auto-Sprint", function(s)
+    autoSprint = s
+    if not s then sprinting = false; applyCurrentSpeed() end
+end)
+makeButton(moveTab, "Sprint Key: LeftShift", function()
+    local keys = {Enum.KeyCode.LeftShift, Enum.KeyCode.LeftControl, Enum.KeyCode.Q, Enum.KeyCode.E}
+    local idx = 1
+    for i, k in ipairs(keys) do if k == sprintKey then idx = i break end end
+    sprintKey = keys[(idx % #keys) + 1]
+    toast("Sprint Key = " .. sprintKey.Name, P_MAIN)
+end, P_BLUE)
+
+makeSection(moveTab, "Flight")
+makeToggle(moveTab, "Fly (WASD / Space / Ctrl)", function(s)
+    flyEnabled = s
+    if s then startFly() else stopFly() end
+end)
+makeSlider(moveTab, "Fly Speed", 10, 500, 80, function(v) flySpeed = v end)
+
+makeSection(moveTab, "Wall Phase")
+makeToggle(moveTab, "Wall Phase TP (press E)", function(s) wallPhaseEnabled = s end)
+makeToggle(moveTab, "Auto Phase", function(s) autoPhaseEnabled = s end)
+makeInput(moveTab, "Phase Distance", "8", function(v)
+    local n = tonumber(v); if n then phaseDistance = math.clamp(n, 3, 30) end
+end)
+makeButton(moveTab, "Phase Key: E", function()
+    local keys = {Enum.KeyCode.E, Enum.KeyCode.F, Enum.KeyCode.Q, Enum.KeyCode.R}
+    local idx = 1
+    for i, k in ipairs(keys) do if k == phaseKey then idx = i break end end
+    phaseKey = keys[(idx % #keys) + 1]
+    toast("Phase Key = " .. phaseKey.Name, P_MAIN)
+end, P_BLUE)
+
+makeSection(moveTab, "Mods")
+makeToggle(moveTab, "Infinite Jump", function(s) infiniteJump = s end)
+makeToggle(moveTab, "Bunny Hop", function(s) bhopEnabled = s end)
+makeToggle(moveTab, "Walk on Water", function(s)
+    walkOnWater = s
+    if walkOnWaterConn then walkOnWaterConn:Disconnect() walkOnWaterConn = nil end
+    if s then
+        walkOnWaterConn = runService.Heartbeat:Connect(function()
+            if not walkOnWater then return end
+            local char = player.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp.Position.Y < 1 then
+                hrp.CFrame = CFrame.new(hrp.Position.X, 3, hrp.Position.Z)
+            end
+        end)
+    end
+end)
+makeToggle(moveTab, "Invisible (Local)", function(s)
+    invisEnabled = s
+    local char = player.Character
+    if char then
+        for _, p in pairs(char:GetDescendants()) do
+            if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+                p.Transparency = s and 1 or 0
+                p.LocalTransparencyModifier = s and 1 or 0
+            end
+            if p:IsA("Decal") then p.Transparency = s and 1 or 0 end
+        end
+    end
+end)
+
+makeSection(moveTab, "Character Size")
+makeSlider(moveTab, "Character Scale", 1, 10, 1, function(v)
+    charScale = v / 3; applyCharacterScale(charScale)
+end)
+makeButton(moveTab, "Reset Scale (1x)", function()
+    charScale = 1; applyCharacterScale(1); toast("Scale reset", P_MAIN)
+end, P_BLUE)
+
+-- ============================================================
+-- TAB 3 — SAFETY
+-- ============================================================
+local safeTab = createTab("🛡️ Safety")
+makeSection(safeTab, "Movement Safety")
+
+makeToggle(safeTab, "Anti-Fling (throttled 0.25s)", function(s) safetyAntiFling = s end)
+makeToggle(safeTab, "Anti-Fling 2 (extra guard)", function(s) safetyAntiFling2 = s end)
+makeToggle(safeTab, "Anti-Void (Y clamp)", function(s) safetyAntiVoid = s end)
+makeInput(safeTab, "Anti-Void Y Threshold", "-80", function(v)
+    local n = tonumber(v); if n then safetyAntiVoidY = n end
+end)
+makeToggle(safeTab, "Anti-Drag (revert large jumps)", function(s)
+    safetyAntiDrag = s
+    if s then safetyDragLast = nil end
+end)
+makeToggle(safeTab, "Anti-Freeze (unstick WalkSpeed)", function(s) safetyAntiFreeze = s end)
+
+makeSection(safeTab, "Session Safety")
+makeToggle(safeTab, "Anti-AFK", function(s) antiAfk = s end)
+makeToggle(safeTab, "Auto-Respawn (instant respawn)", function(s)
+    autoRespawn = s
+    if s then
+        humanoid.Died:Connect(function()
+            if autoRespawn then
+                task.wait(0.1)
+                pcall(function() player:LoadCharacter() end)
+            end
+        end)
+    end
+end)
+makeToggle(safeTab, "Auto-Rejoin on Kick", function(s)
+    safetyAutoRejoin = s
+    if s then
+        if safetyRejoinConn then safetyRejoinConn:Disconnect() end
+        safetyRejoinConn = player.AncestryChanged:Connect(function(_, parent)
+            if parent == nil and safetyAutoRejoin then
+                pcall(function() ts:Teleport(game.PlaceId) end)
+            end
+        end)
+        toast("Auto-Rejoin armed", P_GREEN)
+    else
+        if safetyRejoinConn then safetyRejoinConn:Disconnect() safetyRejoinConn = nil end
+    end
+end)
+
+makeButton(safeTab, "Safe Server Hop", function()
+    toast("Searching...", P_BLUE)
+    local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+    local ok, res = pcall(function() return http:JSONDecode(game:HttpGet(url)) end)
+    if ok and res and res.data then
+        local list = {}
+        for _, s in pairs(res.data) do
+            if s.playing < s.maxPlayers - 1 and s.id ~= game.JobId then
+                table.insert(list, s)
+            end
+        end
+        if #list > 0 then
+            local pick = list[math.random(1, #list)]
+            ts:TeleportToPlaceInstance(game.PlaceId, pick.id, player)
+        else
+            toast("No open servers", P_RED)
+        end
+    else
+        toast("Fetch failed", P_RED)
+    end
+end, P_BLUE)
+
+makeSection(safeTab, "Emergency Position")
+makeButton(safeTab, "💾 Save Emergency Position (F2)", function()
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        emergencyPos = hrp.CFrame
+        toast("Emergency position saved", P_GREEN)
+    end
+end, P_GREEN)
+
+makeButton(safeTab, "🆘 Return to Emergency (F3)", function()
+    if not emergencyPos then toast("No position saved", P_RED) return end
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.CFrame = emergencyPos
+        toast("Returned to emergency position", P_MAIN)
+    end
+end, P_RED)
+
+makeButton(safeTab, "🚨 Full Reset (rejoin)", function()
+    ts:Teleport(game.PlaceId, player)
+end, P_RED)
+
+-- ============================================================
+-- TAB 4 — TELEPORT
+-- ============================================================
+local tpTab = createTab("Teleport")
+makeSection(tpTab, "TP-Click")
+makeToggle(tpTab, "TP-Click (Left)",  function(s) tpEnabled = s end)
+makeToggle(tpTab, "TP-Click (Right)", function(s) clickTp = s end)
+
+makeSection(tpTab, "Waypoints")
+
+local waypointNameInput = makeInput(tpTab, "Waypoint Name", "home", function(v) end)
+
+local waypointList = Instance.new("Frame")
+waypointList.Size = UDim2.new(1, 0, 0, 0)
+waypointList.BackgroundTransparency = 1
+waypointList.Parent = tpTab
+waypointList.AutomaticSize = Enum.AutomaticSize.Y
+Instance.new("UIListLayout", waypointList).Padding = UDim.new(0, 4)
+
+local function refreshWaypointList()
+    for _, c in ipairs(waypointList:GetChildren()) do
+        if not c:IsA("UIListLayout") then c:Destroy() end
+    end
+
+    local names = {}
+    for name in pairs(waypoints) do table.insert(names, name) end
+    table.sort(names)
+
+    local count = 0
+    for _, name in ipairs(names) do
+        local cf = waypoints[name]
+        count = count + 1
+
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 34)
+        row.BackgroundColor3 = P_BTN
+        row.BorderSizePixel = 0
+        row.Parent = waypointList
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -140, 1, 0)
+        lbl.Position = UDim2.new(0, 12, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = name
+        lbl.TextColor3 = P_TEXT
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 12
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextTruncate = Enum.TextTruncate.AtEnd
+        lbl.Parent = row
+
+        local goBtn = Instance.new("TextButton")
+        goBtn.Size = UDim2.new(0, 58, 1, 0)
+        goBtn.Position = UDim2.new(1, -128, 0, 0)
+        goBtn.BackgroundColor3 = P_GREEN
+        goBtn.BorderSizePixel = 0
+        goBtn.Text = "GO"
+        goBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        goBtn.Font = Enum.Font.GothamBold
+        goBtn.TextSize = 11
+        goBtn.Parent = row
+        Instance.new("UICorner", goBtn).CornerRadius = UDim.new(0, 6)
+        goBtn.MouseButton1Click:Connect(function()
+            local char = player.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.CFrame = cf + Vector3.new(0, 3, 0)
+                toast("TP → " .. name, P_MAIN)
+            end
+        end)
+
+        local delBtn = Instance.new("TextButton")
+        delBtn.Size = UDim2.new(0, 58, 1, 0)
+        delBtn.Position = UDim2.new(1, -64, 0, 0)
+        delBtn.BackgroundColor3 = P_RED
+        delBtn.BorderSizePixel = 0
+        delBtn.Text = "DEL"
+        delBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        delBtn.Font = Enum.Font.GothamBold
+        delBtn.TextSize = 11
+        delBtn.Parent = row
+        Instance.new("UICorner", delBtn).CornerRadius = UDim.new(0, 6)
+        delBtn.MouseButton1Click:Connect(function()
+            if waypoints[name] == cf then
+                waypoints[name] = nil
+                saveWaypointsToDisk()
+                toast("Deleted: " .. name, P_RED)
+                task.defer(refreshWaypointList)
+            end
+        end)
+    end
+
+    if count == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 30)
+        empty.BackgroundTransparency = 1
+        empty.Text = "(no waypoints saved yet)"
+        empty.TextColor3 = P_TEXT_D
+        empty.Font = Enum.Font.Gotham
+        empty.TextSize = 12
+        empty.Parent = waypointList
+    end
+end
+
+makeButton(tpTab, "➕  Save Current Position", function()
+    local name = waypointNameInput.Text
+    if not name or name == "" then toast("Enter a name", P_RED) return end
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then toast("No character", P_RED) return end
+    waypoints[name] = hrp.CFrame
+    saveWaypointsToDisk()
+    refreshWaypointList()
+    toast("Saved: " .. name, P_GREEN)
+end, P_GREEN)
+
+makeButton(tpTab, "🔄  Refresh Waypoint List", function()
+    refreshWaypointList()
+    toast("Waypoint list refreshed", P_MAIN)
+end, P_BLUE)
+
+makeButton(tpTab, "🗑️  Clear All Waypoints", function()
+    for k in pairs(waypoints) do waypoints[k] = nil end
+    saveWaypointsToDisk()
+    refreshWaypointList()
+    toast("All waypoints cleared", P_RED)
+end, P_RED)
+
+refreshWaypointList()
+
+makeSection(tpTab, "Player TP")
+makeButton(tpTab, "TP to Random Player", function()
+    local char = player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local list = {}
+    for _, p in pairs(plrs:GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            table.insert(list, p)
+        end
+    end
+    if #list > 0 then
+        local t = list[math.random(1, #list)]
+        root.CFrame = t.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+        toast("TP → " .. t.Name, P_MAIN)
+    end
+end)
+
+makeButton(tpTab, "TP to Closest Player", function()
+    local char = player.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    local closest, dist = nil, math.huge
+    for _, p in pairs(plrs:GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local d = (p.Character.HumanoidRootPart.Position - myRoot.Position).Magnitude
+            if d < dist then closest, dist = p, d end
+        end
+    end
+    if closest then
+        myRoot.CFrame = closest.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+        toast("TP → " .. closest.Name, P_MAIN)
+    end
+end)
+
+makeSection(tpTab, "Item TP")
+local function tpToNearestCategory(cat)
+    local char = player.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    local closest, dist = nil, math.huge
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if (obj:IsA("BasePart") or obj:IsA("Model")) and classifyItem(obj) == cat then
+            local adornee = getAdornee(obj)
+            if adornee then
+                local d = (adornee.Position - myRoot.Position).Magnitude
+                if d < dist then closest, dist = adornee, d end
+            end
+        end
+    end
+    if closest then
+        myRoot.CFrame = CFrame.new(closest.Position + Vector3.new(0, 3, 0))
+        toast("TP → nearest " .. cat, P_MAIN)
+    else
+        toast("No " .. cat .. " found", P_RED)
+    end
+end
+
+makeButton(tpTab, "TP to Nearest Item (Yellow)", function() tpToNearestCategory("item") end, P_YELLOW)
+makeButton(tpTab, "TP to Nearest Heal (Purple)", function() tpToNearestCategory("heal") end, Color3.fromRGB(140, 70, 200))
+makeButton(tpTab, "TP to Nearest Machine (Green)", function() tpToNearestCategory("machine") end, P_GREEN)
+
+makeButton(tpTab, "TP to Nearest Twisted (Red)", function()
+    local char = player.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    local closest, dist = nil, math.huge
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if nameHasMonster(obj) and (obj:IsA("Model") or obj:IsA("BasePart")) then
+            local r = getAdornee(obj)
+            if r then
+                local d = (r.Position - myRoot.Position).Magnitude
+                if d < dist then closest, dist = r, d end
+            end
+        end
+    end
+    if closest then
+        myRoot.CFrame = CFrame.new(closest.Position + Vector3.new(0, 3, 0))
+        toast("TP → Twisted", P_RED)
+    else
+        toast("No Twisted", P_RED)
+    end
+end, P_RED)
+
+-- ============================================================
+-- TAB 5 — VISUALS
+-- ============================================================
+local visTab = createTab("Visuals")
+
+makeSection(visTab, "ESP — Master Controls")
+
+makeButton(visTab, "🔄  REFRESH ESP NOW", function()
+    fullScan()
+    toast("ESP refreshed", P_MAIN)
+end, P_MAIN)
+
+makeButton(visTab, "🧹  Clear All ESP", function()
+    clearAllESP()
+    toast("ESP cleared", P_BLUE)
+end, P_BLUE)
+
+makeToggle(visTab, "Auto-Refresh (slow, 3s — OFF recommended)", function(s)
+    espAutoRefresh = s
+    if s then toast("Auto-refresh ON (may lag)", P_RED)
+    else toast("Auto-refresh OFF", P_GREEN) end
+end)
+
+makeInput(visTab, "Auto-Refresh Interval (sec)", "3", function(v)
+    local n = tonumber(v); if n then espAutoInterval = math.clamp(n, 1, 10) end
+end)
+
+makeSection(visTab, "ESP — Display Options")
+
+makeToggle(visTab, "Show Distance", function(s) espShowDistance = s end)
+makeToggle(visTab, "Show Health", function(s) espShowHealth = s end)
+makeToggle(visTab, "Add Box Outline", function(s)
+    espUseBox = s
+    clearAllESP()
+    if s then toast("ON — press Refresh ESP", P_YELLOW) end
+end)
+makeToggle(visTab, "Add Highlight (soft glow)", function(s)
+    espUseHighlight = s
+    clearAllESP()
+    if s then toast("ON — press Refresh ESP", P_YELLOW) end
+end)
+makeToggle(visTab, "Name Tags (all ESP)", function(s)
+    nameTagEnabled = s
+    clearAllESP()
+    if s then toast("ON — press Refresh ESP", P_YELLOW) end
+end)
+
+makeInput(visTab, "Max Items Shown", "150", function(v)
+    local n = tonumber(v); if n then maxESPItems = math.clamp(n, 5, 500) end
+end)
+
+makeSection(visTab, "ESP — Players (Purple)")
+makeToggle(visTab, "Player ESP", function(s)
+    espPlayerEnabled = s
+    if not s then
+        for _, p in pairs(plrs:GetPlayers()) do
+            if p.Character then removeESPBlock(p.Character) end
+        end
+    else
+        fullScan()
+    end
+end)
+makeInput(visTab, "Player Color (R,G,B)", "180,100,255", function(v)
+    local r, g, b = v:match("(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+    r, g, b = tonumber(r), tonumber(g), tonumber(b)
+    if r and g and b then espPlayerColor = Color3.fromRGB(r, g, b); clearAllESP(); fullScan() end
+end)
+
+makeSection(visTab, "ESP — Twisteds (Red · Monster name only)")
+makeToggle(visTab, "Twisted ESP (name must contain 'Monster')", function(s)
+    espTwistedEnabled = s
+    if not s then
+        for model, data in pairs(espCache) do
+            if data.category == "twisted" then removeESPBlock(model) end
+        end
+    else
+        fullScan()
+    end
+end)
+makeInput(visTab, "Twisted Color (R,G,B)", "255,60,60", function(v)
+    local r, g, b = v:match("(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+    r, g, b = tonumber(r), tonumber(g), tonumber(b)
+    if r and g and b then espTwistedColor = Color3.fromRGB(r, g, b); clearAllESP(); fullScan() end
+end)
+
+makeSection(visTab, "ESP — Items (Yellow)")
+makeToggle(visTab, "Item ESP (Tape/Valve/POP/Chocolate/Gumballs/Bottle o' Pop/Speed Candy/Stamina Candy)", function(s)
+    espItemEnabled = s
+    if not s then
+        for model, data in pairs(espCache) do
+            if data.category == "item" then removeESPBlock(model) end
+        end
+    else
+        fullScan()
+    end
+end)
+makeInput(visTab, "Item Color (R,G,B)", "255,220,60", function(v)
+    local r, g, b = v:match("(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+    r, g, b = tonumber(r), tonumber(g), tonumber(b)
+    if r and g and b then espItemColor = Color3.fromRGB(r, g, b); clearAllESP(); fullScan() end
+end)
+
+makeSection(visTab, "ESP — Heals (Purple)")
+makeToggle(visTab, "Heal ESP (Medkit/Bandage)", function(s)
+    espHealEnabled = s
+    if not s then
+        for model, data in pairs(espCache) do
+            if data.category == "heal" then removeESPBlock(model) end
+        end
+    else
+        fullScan()
+    end
+end)
+makeInput(visTab, "Heal Color (R,G,B)", "200,100,255", function(v)
+    local r, g, b = v:match("(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+    r, g, b = tonumber(r), tonumber(g), tonumber(b)
+    if r and g and b then espHealColor = Color3.fromRGB(r, g, b); clearAllESP(); fullScan() end
+end)
+
+makeSection(visTab, "ESP — Machines (Green)")
+makeToggle(visTab, "Machine ESP", function(s)
+    espMachineEnabled = s
+    if not s then
+        for model, data in pairs(espCache) do
+            if data.category == "machine" then removeESPBlock(model) end
+        end
+    else
+        fullScan()
+    end
+end)
+makeInput(visTab, "Machine Color (R,G,B)", "60,220,100", function(v)
+    local r, g, b = v:match("(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+    r, g, b = tonumber(r), tonumber(g), tonumber(b)
+    if r and g and b then espMachineColor = Color3.fromRGB(r, g, b); clearAllESP(); fullScan() end
+end)
+
+makeSection(visTab, "Lighting")
+makeToggle(visTab, "Fullbright", function(s)
+    fullbrightEnabled = s
+    if s then
+        lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        lighting.Brightness = 3
+        lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+    else
+        lighting.Ambient = Color3.fromRGB(70, 70, 70)
+        lighting.Brightness = 2
+        lighting.OutdoorAmbient = Color3.fromRGB(70, 70, 70)
+    end
+end)
+makeToggle(visTab, "Remove Fog", function(s)
+    if s then
+        lighting.FogEnd = 1e6; lighting.FogStart = 1e6
+    else
+        lighting.FogEnd = 100000; lighting.FogStart = 0
+    end
+end)
+makeSlider(visTab, "FOV", 60, 120, 70, function(v) camera.FieldOfView = v end)
+makeToggle(visTab, "Low Graphics", function(s)
+    lowGraphics = s
+    if s then
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("Decal") or obj:IsA("Texture") then
+                obj.Transparency = 1
+            elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
+                obj.Enabled = false
+            end
+        end
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    else
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+    end
+end)
+
+makeSection(visTab, "Dandy's World")
+makeButton(visTab, "Debug Scan (Find Names)", function()
+    print("=== Safe Play Debug Scan ===")
+    local count = 0
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") or obj:IsA("Model") then
+            local skip = false
+            if player.Character and (obj == player.Character or obj:IsDescendantOf(player.Character)) then
+                skip = true
+            end
+            for _, p in pairs(plrs:GetPlayers()) do
+                if p ~= player and p.Character and (obj == p.Character or obj:IsDescendantOf(p.Character)) then
+                    skip = true; break
+                end
+            end
+            if not skip then
+                local parentName = obj.Parent and obj.Parent.Name or "nil"
+                print(("[%s] %s  →  parent: %s"):format(obj.ClassName, obj.Name, parentName))
+                count = count + 1
+                if count >= 150 then break end
+            end
+        end
+    end
+    print("=== End (" .. count .. ") ===")
+    toast("Scan printed to console", P_BLUE)
+end, P_BLUE)
+
+makeButton(visTab, "Scan for Monster Objects Only", function()
+    print("=== Monster Scan ===")
+    local count = 0
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if (obj:IsA("Model") or obj:IsA("BasePart")) and nameHasMonster(obj) then
+            local parentName = obj.Parent and obj.Parent.Name or "nil"
+            print(("[%s] %s  →  parent: %s"):format(obj.ClassName, obj.Name, parentName))
+            count = count + 1
+        end
+    end
+    print("=== End (" .. count .. " monsters) ===")
+    toast("Found " .. count .. " monster objects", P_BLUE)
+end, P_BLUE)
+
+-- ============================================================
+-- TAB 6 — UTILITY
+-- ============================================================
+local utilTab = createTab("Utility")
+makeSection(utilTab, "Self")
+makeToggle(utilTab, "Auto Heal", function(s) autoHealEnabled = s end)
+makeToggle(utilTab, "Auto Jump", function(s) autoJumpEnabled = s end)
+makeButton(utilTab, "Refill Health", function()
+    if humanoid then humanoid.Health = humanoid.MaxHealth end
+    toast("Health refilled", P_GREEN)
+end, P_GREEN)
+makeButton(utilTab, "Remove Accessories", function()
+    local char = player.Character; if not char then return end
+    for _, i in pairs(char:GetChildren()) do
+        if i:IsA("Accessory") or i:IsA("Hat") then i:Destroy() end
+    end
+    toast("Accessories removed", P_MAIN)
+end)
+makeButton(utilTab, "Copy My Position", function()
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp and setclipboard then
+        setclipboard(string.format("%.2f, %.2f, %.2f",
+            hrp.Position.X, hrp.Position.Y, hrp.Position.Z))
+        toast("Position copied", P_MAIN)
+    end
+end, P_BLUE)
+makeButton(utilTab, "Reset Character", function()
+    if humanoid then humanoid.Health = 0 end
+end, P_RED)
+
+makeSection(utilTab, "World")
+makeButton(utilTab, "Rejoin Server", function()
+    ts:Teleport(game.PlaceId, player)
+end, P_ORANGE)
+makeButton(utilTab, "Print Server Info", function()
+    print("=== SERVER INFO ===")
+    print("Place: " .. game.PlaceId)
+    print("Job: " .. game.JobId)
+    print("Players: " .. #plrs:GetPlayers())
+    toast("Printed to console", P_BLUE)
+end, P_BLUE)
+
+-- ============================================================
+-- TAB 7 — SETTINGS
+-- ============================================================
+local settingsTab = createTab("Settings")
+makeSection(settingsTab, "Interface")
+makeToggle(settingsTab, "Stat HUD", function(s) hudEnabled = s end)
+makeToggle(settingsTab, "Watermark", function(s)
+    watermarkEnabled = s; watermarkFrame.Visible = s
+end)
+makeToggle(settingsTab, "Toast Notifications", function(s) toastsEnabled = s end)
+
+makeButton(settingsTab, "Reset GUI Position", function()
+    main.Position = UDim2.new(0.5, -390, 0.5, -290)
+    toast("GUI reset", P_MAIN)
+end)
+makeButton(settingsTab, "Reset HUD Position", function()
+    hudFrame.Position = UDim2.new(0, 20, 0, 60)
+    toast("HUD reset", P_MAIN)
+end)
+
+makeSection(settingsTab, "Config")
+makeButton(settingsTab, "Save Config", function()
+    local cfg = {
+        walkSpeed = walkSpeedVal, sprintSpeed = sprintSpeedVal, flySpeed = flySpeed,
+        espPlayerColor = tostring(espPlayerColor),
+        espTwistedColor = tostring(espTwistedColor),
+        espItemColor = tostring(espItemColor),
+        espHealColor = tostring(espHealColor),
+        espMachineColor = tostring(espMachineColor),
+    }
+    if writefile then
+        pcall(function() writefile("SafePlayConfig.json", http:JSONEncode(cfg)) end)
+        toast("Config saved", P_GREEN)
+    else
+        toast("writefile not supported", P_RED)
+    end
+end, P_GREEN)
+
+makeButton(settingsTab, "Load Config", function()
+    if readfile then
+        local ok, data = pcall(function() return readfile("SafePlayConfig.json") end)
+        if ok and data then
+            local ok2, cfg = pcall(function() return http:JSONDecode(data) end)
+            if ok2 and cfg then
+                if cfg.walkSpeed then walkSpeedVal = cfg.walkSpeed end
+                if cfg.sprintSpeed then sprintSpeedVal = cfg.sprintSpeed end
+                if cfg.flySpeed then flySpeed = cfg.flySpeed end
+                applyCurrentSpeed()
+                toast("Config loaded", P_GREEN)
+            end
+        end
+    end
+end, P_BLUE)
+
+makeSection(settingsTab, "Info")
+makeButton(settingsTab, "Destroy GUI", function() screenGui:Destroy() end, P_RED)
+
+-- ============================================================
+-- MASTER LOOPS
+-- ============================================================
+local lastFPSUpdate = tick()
+local frameCount = 0
+local fpsAccum = 0
+local currentFPS = 60
+
+runService.RenderStepped:Connect(function(dt)
+    if hudEnabled then
+        hudFrame.Visible = true
+        frameCount = frameCount + 1
+        fpsAccum = fpsAccum + dt
+        if tick() - lastFPSUpdate >= 0.5 then
+            currentFPS = math.floor(frameCount / fpsAccum)
+            hudFPS.Text = tostring(currentFPS)
+            if currentFPS >= 55 then hudFPS.TextColor3 = Color3.fromRGB(100, 220, 120)
+            elseif currentFPS >= 30 then hudFPS.TextColor3 = Color3.fromRGB(230, 200, 80)
+            else hudFPS.TextColor3 = Color3.fromRGB(230, 90, 90) end
+            frameCount = 0
+            fpsAccum = 0
+            lastFPSUpdate = tick()
+            if watermarkEnabled then
+                watermarkLabel.Text = string.format("◆ SAFE PLAY · v23 · %d FPS", currentFPS)
+            end
+            if dashStatFPS then dashStatFPS.Text = tostring(currentFPS) end
+        end
+    else
+        hudFrame.Visible = false
+    end
+
+    if not flyEnabled and (forceSpeed or sprinting) then applyCurrentSpeed() end
+
+    if flyEnabled and flyVelocity and flyAlign then
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root or flyVelocity.Parent ~= root or flyAlign.Parent ~= root then
+            startFly()
+        else
+            local moveDir = Vector3.zero
+            if uis:IsKeyDown(Enum.KeyCode.W) then moveDir += camera.CFrame.LookVector end
+            if uis:IsKeyDown(Enum.KeyCode.S) then moveDir -= camera.CFrame.LookVector end
+            if uis:IsKeyDown(Enum.KeyCode.A) then moveDir -= camera.CFrame.RightVector end
+            if uis:IsKeyDown(Enum.KeyCode.D) then moveDir += camera.CFrame.RightVector end
+            if uis:IsKeyDown(Enum.KeyCode.Space) then moveDir += Vector3.new(0, 1, 0) end
+            if uis:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir -= Vector3.new(0, 1, 0) end
+            if moveDir.Magnitude > 0 then
+                flyVelocity.VectorVelocity = moveDir.Unit * flySpeed
+            else
+                flyVelocity.VectorVelocity = Vector3.zero
+            end
+            flyAlign.CFrame = camera.CFrame
+        end
+    end
+end)
+
+runService.Heartbeat:Connect(function()
+    local now = tick()
+
+    if autoHealEnabled and humanoid and humanoid.Parent and humanoid.Health < humanoid.MaxHealth then
+        humanoid.Health = humanoid.MaxHealth
+    end
+    if autoJumpEnabled and humanoid and humanoid.Parent and humanoid.FloorMaterial ~= Enum.Material.Air then
+        humanoid.Jump = true
+    end
+    if bhopEnabled and humanoid and humanoid.Parent and humanoid.FloorMaterial ~= Enum.Material.Air then
+        humanoid.Jump = true
+    end
+    if autoSprint and humanoid and humanoid.Parent then
+        local moving = humanoid.MoveDirection.Magnitude > 0.1
+        if moving and not sprinting then sprinting = true; applyCurrentSpeed()
+        elseif not moving and sprinting then sprinting = false; applyCurrentSpeed() end
+    end
+    if autoPhaseEnabled and now - autoPhaseLast > 0.5 then
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and humanoid and humanoid.MoveDirection.Magnitude > 0.1 then
+            local speed = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z).Magnitude
+            if speed <= 2 then
+                local params = RaycastParams.new()
+                params.FilterType = Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances = { char }
+                local dir = humanoid.MoveDirection
+                dir = Vector3.new(dir.X, 0, dir.Z).Unit
+                local hit = workspace:Raycast(hrp.Position, dir * 3, params)
+                if hit then
+                    if phaseThroughWall() then autoPhaseLast = now end
+                end
+            end
+        end
+    end
+
+    -- Safety (throttled)
+    if safetyAntiFling and now - safetyLastFling > 0.25 then
+        safetyLastFling = now
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            for _, v in pairs(hrp:GetChildren()) do
+                if v:IsA("BodyAngularVelocity") or v:IsA("BodyForce") or v:IsA("AngularVelocity") then
+                    v:Destroy()
+                end
+            end
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+    if safetyAntiFling2 and now - safetyLastFling2 > 0.2 then
+        safetyLastFling2 = now
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local v = hrp.AssemblyLinearVelocity
+            if v.Magnitude > 500 then
+                hrp.AssemblyLinearVelocity = v.Unit * 250
+            end
+        end
+    end
+    if safetyAntiVoid and now - safetyLastVoid > 0.3 then
+        safetyLastVoid = now
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            if hrp.Position.Y < safetyAntiVoidY then
+                if safetyLastPos then
+                    hrp.CFrame = CFrame.new(safetyLastPos.X, safetyLastPos.Y + 5, safetyLastPos.Z)
+                    toast("Anti-Void: returned", P_RED)
+                else
+                    hrp.CFrame = CFrame.new(hrp.Position.X, 100, hrp.Position.Z)
+                end
+            elseif hrp.Position.Y > safetyAntiVoidY + 20 then
+                safetyLastPos = hrp.Position
+            end
+        end
+    end
+    if safetyAntiDrag and now - safetyLastDrag > 0.2 then
+        safetyLastDrag = now
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            if safetyDragLast then
+                local dist = (hrp.Position - safetyDragLast).Magnitude
+                if dist > 35 and not flyEnabled then
+                    hrp.CFrame = CFrame.new(safetyDragLast)
+                    toast("Anti-Drag: reverted", P_RED)
+                end
+            end
+            safetyDragLast = hrp.Position
+        end
+    end
+    if safetyAntiFreeze and now - safetyLastFreeze > 0.5 then
+        safetyLastFreeze = now
+        local char = player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.WalkSpeed < 1 and not sprinting and not forceSpeed then
+            hum.WalkSpeed = walkSpeedVal
+        end
+    end
+
+    if espAutoRefresh and now - espLastAuto >= espAutoInterval then
+        espLastAuto = now
+        fullScan()
+    end
+
+    if now - espLastLabel >= espLabelInterval then
+        espLastLabel = now
+        refreshESPLabels()
+    end
+end)
+
+-- ============================================================
+-- HUD INFO
+-- ============================================================
+task.spawn(function()
+    while task.wait(0.5) do
+        if not hudEnabled then continue end
+        local ok, ping = pcall(function() return stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+        hudPing.Text = ok and (math.floor(ping) .. " ms") or "—"
+
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local vel = hrp.AssemblyLinearVelocity
+            local flat = Vector3.new(vel.X, 0, vel.Z).Magnitude
+            hudSpeed.Text = string.format("%.1f s/s", flat)
+            hudSpeed.TextColor3 = (flat > 0.5) and P_MAIN or P_TEXT
+            hudPos.Text = string.format("%d, %d, %d",
+                hrp.Position.X, hrp.Position.Y, hrp.Position.Z)
+        else
+            hudSpeed.Text = "—"; hudPos.Text = "—"
+        end
+
+        local t = os.date("*t")
+        hudClock.Text = string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
+
+        local bits = {}
+        if flyEnabled       then bits[#bits+1] = "FLY"     end
+        if forceSpeed       then bits[#bits+1] = "FORCE"   end
+        if sprinting        then bits[#bits+1] = "SPRINT"  end
+        if autoSprint       then bits[#bits+1] = "AUTO"    end
+        if wallPhaseEnabled then bits[#bits+1] = "PHASE"   end
+        if espPlayerEnabled then bits[#bits+1] = "ESP-P"   end
+        if espTwistedEnabled then bits[#bits+1] = "ESP-T"  end
+        if espItemEnabled   then bits[#bits+1] = "ESP-I"   end
+        if espHealEnabled   then bits[#bits+1] = "ESP-H"   end
+        if espMachineEnabled then bits[#bits+1] = "ESP-M"  end
+        hudState.Text = (#bits > 0) and table.concat(bits, " · ") or "idle"
+        hudState.TextColor3 = (#bits > 0) and P_MAIN or P_TEXT_D
+
+        if dashStatPlayers then dashStatPlayers.Text = tostring(#plrs:GetPlayers()) end
+        if dashStatTime then dashStatTime.Text = string.format("%02d:%02d", t.hour, t.min) end
+    end
+end)
+
+-- ============================================================
+-- INPUT
+-- ============================================================
+_G.SafePlayHideKey = Enum.KeyCode.RightShift
+
+uis.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == sprintKey then sprinting = true; applyCurrentSpeed() end
+    if input.KeyCode == phaseKey and wallPhaseEnabled then phaseThroughWall() end
+    if input.KeyCode == _G.SafePlayHideKey then
+        main.Visible = not main.Visible
+        toast(main.Visible and "GUI Shown" or "GUI Hidden", P_MAIN)
+    end
+    if input.KeyCode == Enum.KeyCode.F2 then
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            emergencyPos = hrp.CFrame
+            toast("Emergency pos saved (F2)", P_GREEN)
+        end
+    end
+    if input.KeyCode == Enum.KeyCode.F3 then
+        if emergencyPos then
+            local char = player.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.CFrame = emergencyPos
+                toast("Returned (F3)", P_MAIN)
+            end
+        end
+    end
+end)
+
+uis.InputEnded:Connect(function(input)
+    if input.KeyCode == sprintKey then sprinting = false; applyCurrentSpeed() end
+end)
+
+uis.JumpRequest:Connect(function()
+    if infiniteJump and humanoid and humanoid.Parent then
+        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end)
+
+player.Idled:Connect(function()
+    if antiAfk then
+        vu:CaptureController()
+        vu:ClickButton2(Vector2.new())
+    end
+end)
+
+mouse.Button1Down:Connect(function()
+    if tpEnabled then
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root and mouse.Hit then
+            root.CFrame = CFrame.new(mouse.Hit.Position + Vector3.new(0, 3, 0))
+        end
+    end
+end)
+
+mouse.Button2Down:Connect(function()
+    if clickTp then
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root and mouse.Hit then
+            root.CFrame = CFrame.new(mouse.Hit.Position + Vector3.new(0, 3, 0))
+        end
+    end
+end)
+
+local minimized = false
+minimize.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    sidebar.Visible = not minimized
+    content.Visible = not minimized
+    local targetSize = minimized and UDim2.new(0, 780, 0, 54) or UDim2.new(0, 780, 0, 580)
+    tween:Create(main, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Size = targetSize,
+    }):Play()
+end)
+
+-- ============================================================
+-- RESPAWN
+-- ============================================================
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    humanoid  = newChar:WaitForChild("Humanoid")
+    rootPart  = newChar:WaitForChild("HumanoidRootPart")
+
+    if flyVelocity then flyVelocity:Destroy() flyVelocity = nil end
+    if flyAlign then flyAlign:Destroy() flyAlign = nil end
+    if flyAttachment then flyAttachment:Destroy() flyAttachment = nil end
+
+    clearAllESP()
+    attachSpeedGuard(humanoid)
+
+    task.defer(function()
+        task.wait(0.3)
+        applyCurrentSpeed()
+        fullScan()
+    end)
+
+    task.defer(function()
+        task.wait(0.5)
+        if flyEnabled then startFly() end
+    end)
+
+    if charScale ~= 1 then
+        task.defer(function()
+            task.wait(0.5)
+            applyCharacterScale(charScale)
+        end)
+    end
+end)
+
+toast("Gui For Safe Play · v23 Loaded", P_MAIN)
+print("[Gui For Safe Play] v23 · Loaded.")
+print("[Safe Play] Twisted ESP: STRICT — only objects with 'Monster' in the name.")
+print("[Safe Play] Waypoints: persistent (saved to " .. WAYPOINT_FILE .. ").")
